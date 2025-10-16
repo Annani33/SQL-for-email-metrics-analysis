@@ -1,0 +1,127 @@
+WITH
+accounts AS (
+ SELECT
+   s.date AS date,
+   COUNT(DISTINCT ac.account_id) AS account_cnt,
+   sp.country AS country,
+   acc.send_interval,
+   acc.is_verified,
+   acc.is_unsubscribed
+ FROM `DA.account` acc
+ JOIN `DA.account_session` ac ON acc.id = ac.account_id
+ JOIN `DA.session` s ON ac.ga_session_id = s.ga_session_id
+ JOIN `DA.session_params` sp ON s.ga_session_id = sp.ga_session_id
+ GROUP BY date, country, send_interval, is_verified, is_unsubscribed
+),
+
+
+account_total AS (
+ SELECT country, SUM(account_cnt) AS total_country_account_cnt
+ FROM accounts
+ GROUP BY country
+),
+
+
+account_rank AS (
+ SELECT
+   country,
+   total_country_account_cnt,
+   DENSE_RANK() OVER (ORDER BY total_country_account_cnt DESC) AS rank_total_country_account_cnt
+ FROM account_total
+),
+
+
+emails AS (
+ SELECT
+   sp.country AS country,
+   DATE_ADD(s.date, INTERVAL ems.sent_date DAY) AS date,
+   COUNT(DISTINCT ems.id_message) AS sent_msg,
+   COUNT(DISTINCT eo.id_message) AS open_msg,
+   COUNT(DISTINCT ev.id_message) AS visit_msg
+ FROM `DA.email_sent` ems
+ JOIN `DA.account_session` acs ON ems.id_account = acs.account_id
+ JOIN `DA.session` s ON acs.ga_session_id = s.ga_session_id
+ JOIN `DA.account` acc ON acc.id = acs.account_id
+ JOIN `DA.session_params` sp ON sp.ga_session_id = acs.ga_session_id
+ LEFT JOIN `DA.email_open` eo ON ems.id_message = eo.id_message
+ LEFT JOIN `DA.email_visit` ev ON ems.id_message = ev.id_message
+ GROUP BY date, country
+),
+
+
+email_total AS (
+ SELECT country, SUM(sent_msg) AS total_country_sent_cnt
+ FROM emails
+ GROUP BY country
+),
+
+
+email_rank AS (
+ SELECT
+   country,
+   total_country_sent_cnt,
+   DENSE_RANK() OVER (ORDER BY total_country_sent_cnt DESC) AS rank_total_country_sent_cnt
+ FROM email_total
+),
+
+
+union_data AS (
+ SELECT
+   date,
+   country,
+   0 AS send_interval,
+   0 AS is_verified,
+   0 AS is_unsubscribed,
+   0 AS account_cnt,
+   sent_msg,
+   open_msg,
+   visit_msg,
+   0 AS total_country_account_cnt,
+   total_country_sent_cnt
+ FROM emails
+ JOIN email_total USING(country)
+  UNION ALL
+  SELECT
+   date,
+   country,
+   send_interval,
+   is_verified,
+   is_unsubscribed,
+   account_cnt,
+   0 AS sent_msg,
+   0 AS open_msg,
+   0 AS visit_msg,
+   total_country_account_cnt,
+   0 AS total_country_sent_cnt
+ FROM accounts
+ JOIN account_total USING(country)
+),
+
+
+agreg AS (
+ SELECT
+   date,
+   country,
+   send_interval,
+   is_verified,
+   is_unsubscribed,
+   SUM(account_cnt) AS account_cnt,
+   SUM(sent_msg) AS sent_msg,
+   SUM(open_msg) AS open_msg,
+   SUM(visit_msg) AS visit_msg
+ FROM union_data
+ GROUP BY date, country, send_interval, is_verified, is_unsubscribed
+)
+
+
+SELECT
+ agreg.*,
+ ar.total_country_account_cnt,
+ er.total_country_sent_cnt,
+ ar.rank_total_country_account_cnt,
+ er.rank_total_country_sent_cnt
+FROM agreg
+JOIN account_rank ar USING(country)
+JOIN email_rank er USING(country)
+WHERE ar.rank_total_country_account_cnt <= 10
+  OR er.rank_total_country_sent_cnt <= 10
